@@ -1,0 +1,65 @@
+// Check of the Navier-Stokes discretisation on the steady benchmark 2D-1 of Schafer &
+// Turek (1996): flow past a cylinder in a channel at Re = 20. Same elements and the
+// same force evaluation as the rotor, without the sliding part.
+//
+//   FreeFem++ -nw cylinder.edp
+//   python scripts/run.py cylinder --n 16 32 64
+//
+// Reference values (John 2004): cD = 5.57953523, cL = 0.010618948, dp = 0.11752016.
+
+include "common.idp"
+
+// Parameters; scripts/run.py overrides them through override.idp.
+int n = 32;                      // elements across the channel height
+string out = "cylinder.csv";
+include "override.idp"
+
+real H = 0.41, L = 2.2, xc = 0.2, yc = 0.2, r = 0.05;
+real nu = 1e-3, Um = 0.3, Umean = 2*Um/3;
+
+border bottom(t=0, L){x=t; y=0; label=2;}
+border outlet(t=0, H){x=L; y=t; label=3;}
+border top(t=L, 0){x=t; y=H; label=2;}
+border inlet(t=H, 0){x=0; y=t; label=1;}
+border cyl(t=0, 2*pi){x=xc + r*cos(t); y=yc + r*sin(t); label=4;}
+
+mesh Th = buildmesh(bottom(5*n) + outlet(n) + top(5*n) + inlet(n) + cyl(-2*n));
+
+fespace Xh(Th, [P2, P2, P1]);
+Xh [u1, u2, p], [v1, v2, q], [d1, d2, dp];
+
+func uin = 4*Um*y*(H - y)/H^2;
+
+// Stokes as a first guess, then Newton.
+solve stokes([u1, u2, p], [v1, v2, q])
+    = int2d(Th)(nu*(grad(u1)'*grad(v1) + grad(u2)'*grad(v2)) - p*div(v1, v2) - q*div(u1, u2))
+    + on(1, u1 = uin, u2 = 0) + on(2, 4, u1 = 0, u2 = 0);
+
+for (int it = 0; it < 20; ++it)
+{
+    solve newton([d1, d2, dp], [v1, v2, q])
+        = int2d(Th)(conv(u1, u2, d1)*v1 + conv(u1, u2, d2)*v2
+            + conv(d1, d2, u1)*v1 + conv(d1, d2, u2)*v2
+            + nu*(grad(d1)'*grad(v1) + grad(d2)'*grad(v2))
+            - dp*div(v1, v2) - q*div(d1, d2))
+        + int2d(Th)(conv(u1, u2, u1)*v1 + conv(u1, u2, u2)*v2
+            + nu*(grad(u1)'*grad(v1) + grad(u2)'*grad(v2))
+            - p*div(v1, v2) - q*div(u1, u2))
+        + on(1, 2, 4, d1 = 0, d2 = 0);
+    u1[] += d1[];
+    real res = d1[].linfty;
+    cout << "newton " << it << " " << res << endl;
+    if (res < 1e-10) break;
+}
+
+real fx = -int1d(Th, 4)(tractionX(u1, u2, p));
+real fy = -int1d(Th, 4)(tractionY(u1, u2, p));
+real cD = 2*fx/(Umean^2*2*r);
+real cL = 2*fy/(Umean^2*2*r);
+real deltaP = p(xc - r, yc) - p(xc + r, yc);
+
+ofstream f(out);
+f << "n,cells,dofs,cD,cL,dp" << endl;
+f << n << "," << Th.nt << "," << Xh.ndof << "," << cD << "," << cL << "," << deltaP << endl;
+cout.precision(8);
+cout << "n " << n << " cells " << Th.nt << " cD " << cD << " cL " << cL << " dp " << deltaP << endl;

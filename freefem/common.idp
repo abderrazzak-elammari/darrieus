@@ -1,0 +1,11 @@
+// Differential macros and the boundary traction, shared by the three scripts.
+
+macro grad(f) [dx(f), dy(f)] //
+macro div(u1, u2) (dx(u1) + dy(u2)) //
+macro conv(a1, a2, f) ((a1)*dx(f) + (a2)*dy(f)) //
+macro D(u1, u2) [[2*dx(u1), dy(u1) + dx(u2)], [dy(u1) + dx(u2), 2*dy(u2)]] //
+
+// Traction sigma.N with sigma = -p I + nu (grad u + grad u^T), N the outward normal of
+// the fluid domain. The force of the fluid on a body is minus its integral.
+macro tractionX(u1, u2, p) (-p*N.x + nu*(2*dx(u1)*N.x + (dy(u1) + dx(u2))*N.y)) //
+macro tractionY(u1, u2, p) (-p*N.y + nu*((dy(u1) + dx(u2))*N.x + 2*dy(u2)*N.y)) //

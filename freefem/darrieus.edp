@@ -1,0 +1,137 @@
+// Two-bladed H-Darrieus rotor in a uniform stream, 2D, laminar, sliding mesh.
+//
+// Geometry after Rezaeiha, Montazeri & Blocken (2018): NACA0018 blades mounted at
+// quarter chord, rotor core of 1.5 D, inlet 15 D upstream of the shaft, outlet 10 D
+// downstream, width 20 D. Lengths are scaled by D and velocities by U, so Re = U D / nu.
+//
+//   FreeFem++ -nw darrieus.edp        (or open it in FreeFem++-cs and press run)
+//   python scripts/run.py rotor --tsr 2.5 --N 120 --revs 5
+//
+// Azimuth theta is measured counterclockwise from the +x axis (downwind); blade 1
+// starts at theta = 90 deg (top, moving upwind), blade 2 at 270 deg.
+
+
+
+include "common.idp"
+
+// Parameters; scripts/run.py overrides them through override.idp.
+real lambda = 2.5;               // tip speed ratio omega R / U
+real Re = 5000;                  // U D / nu
+int nIface = 120;                // nodes on the interface, also time steps per turn
+int nBlade = 40;                 // nodes around each blade
+real revs = 5;                   // revolutions to compute
+real chord = 0.06;               // blade chord, in diameters
+int snapEvery = 1;               // vorticity snapshot every k steps on the last turn
+string out = "darrieus.csv";
+string snapDir = "C:/Users/mberthie/Desktop/darrieus/results/frames/rotor_tsr2.5_Re5000_N120";
+int show = 1;                    // plots in the FreeFem++-cs window (ignored with -nw)
+include "override.idp"
+
+real R = 0.5, Rc = 0.75;
+real nu = 1/Re;
+real om = lambda/R;
+real thick = 0.18;
+real pivot = 0.25;
+
+func real naca(real xi)
+{
+    return 5*thick*chord*(0.2969*sqrt(xi) - 0.1260*xi - 0.3516*xi^2 + 0.2843*xi^3 - 0.1036*xi^4);
+}
+
+// Blade whose quarter chord sits at azimuth a, chord tangent to the circle, leading
+// edge facing the direction of rotation.
+func real bladeX(real a, real t)
+{
+    real xi = (1 + cos(t))/2;
+    real eta = (sin(t) >= 0 ? 1 : -1)*naca(xi);
+    real le = pivot*chord;
+    return R*cos(a) - (le - xi*chord)*sin(a) + eta*cos(a);
+}
+
+func real bladeY(real a, real t)
+{
+    real xi = (1 + cos(t))/2;
+    real eta = (sin(t) >= 0 ? 1 : -1)*naca(xi);
+    real le = pivot*chord;
+    return R*sin(a) + (le - xi*chord)*cos(a) + eta*sin(a);
+}
+
+real a1 = pi/2, a2 = 3*pi/2;
+border blade1(t=0, 2*pi){x=bladeX(a1, t); y=bladeY(a1, t); label=4;}
+border blade2(t=0, 2*pi){x=bladeX(a2, t); y=bladeY(a2, t); label=5;}
+border iface(t=0, 2*pi){x=Rc*cos(t); y=Rc*sin(t); label=9;}
+
+real xIn = -15, xOut = 10, yW = 10;
+border inlet(t=0, 1){x=xIn; y=yW - 2*yW*t; label=1;}
+border bottom(t=0, 1){x=xIn + (xOut - xIn)*t; y=-yW; label=2;}
+border outlet(t=0, 1){x=xOut; y=-yW + 2*yW*t; label=3;}
+border top(t=0, 1){x=xOut - (xOut - xIn)*t; y=yW; label=2;}
+
+// Inner circles hold the mesh size between the blade path and the shaft; outer ones
+// grade it towards the far field and keep the wake fine for a couple of diameters.
+border g1(t=0, 2*pi){x=0.20*cos(t); y=0.20*sin(t); label=10;}
+border g2(t=0, 2*pi){x=0.40*cos(t); y=0.40*sin(t); label=10;}
+border g3(t=0, 2*pi){x=0.60*cos(t); y=0.60*sin(t); label=10;}
+border s1(t=0, 2*pi){x=1.2*cos(t); y=1.2*sin(t); label=11;}
+border s2(t=0, 2*pi){x=2.5*cos(t); y=2.5*sin(t); label=11;}
+
+mesh rotor0 = buildmesh(iface(nIface) + g3(nIface) + g2(round(0.6*nIface)) + g1(20)
+                        + blade1(-nBlade) + blade2(-nBlade));
+mesh stator = buildmesh(inlet(20) + bottom(25) + outlet(20) + top(25)
+                        + s2(round(0.4*nIface)) + s1(round(0.7*nIface)) + iface(-nIface));
+rotor0 = change(rotor0, fregion = 1);
+stator = change(stator, fregion = 0);
+
+// Uniform inflow, slip on the far side walls, no slip on the blades, and the natural
+// (zero traction) condition at the outlet.
+macro BCS on(1, u1 = 1, u2 = 0) + on(2, u2 = 0) + on(4, 5, u1 = -om*y, u2 = om*x) //
+real pinned = 0;
+
+include "sliding.idp"
+
+[u1n, u2n, pn] = [1, 0, 0];
+[u1m, u2m, pm] = [1, 0, 0];
+
+if (show) plot(Th, wait = 1, cmm = "rotor and stator, " + Th.nt + " triangles; close to start");
+cout << "cells " << Th.nt << " rotor " << rotor0.nt << " dt " << dt << endl;
+
+fespace Wh(Th, P1);
+int nx = 400, ny = 160;
+real gx0 = -1.5, gx1 = 4.5, gy0 = -1.2, gy1 = 1.2;
+
+ofstream f(out);
+f << "step,t,theta_deg,torque,torque1,torque2,fx,fy" << endl;
+int nSteps = round(revs*nIface);
+for (int k = 0; k < nSteps; ++k)
+{
+    ADVANCE
+    f << step << "," << step*dt << "," << theta*180/pi << ","
+      << torque(4) + torque(5) << "," << torque(4) << "," << torque(5) << ","
+      << forceX(4) + forceX(5) << "," << forceY(4) + forceY(5) << endl;
+
+    if (show && k % 5 == 4)
+    {
+        Wh w = dx(u2) - dy(u1);
+        plot(w, fill = 1, bb = [[-1.5, -1.2], [4.5, 1.2]], cmm = "vorticity, azimuth " + theta*180/pi + " deg, Cm " + (torque(4) + torque(5))/0.25);
+    }
+
+    // FreeFEM evaluates both sides of &&, so the modulo needs its own test.
+    bool snap = false;
+    if (snapEvery > 0 && k >= nSteps - nIface) snap = ((nSteps - 1 - k) % snapEvery == 0);
+    if (snap)
+    {
+        Wh vort = dx(u2) - dy(u1);
+        ofstream g(snapDir + "/vort_" + step + ".txt");
+        g << theta*180/pi << endl;
+        for (int j = 0; j < ny; ++j)
+        {
+            real yy = gy0 + (gy1 - gy0)*(j + 0.5)/ny;
+            for (int i = 0; i < nx; ++i)
+            {
+                real xx = gx0 + (gx1 - gx0)*(i + 0.5)/nx;
+                g << vort(xx, yy) << " ";
+            }
+            g << endl;
+        }
+    }
+}

@@ -1,0 +1,84 @@
+// Sliding-mesh Navier-Stokes, Taylor-Hood P2/P1, BDF2 in time, velocity and pressure
+// solved together with a linearised (extrapolated) convection.
+//
+// The domain is a fixed stator and a disc of radius Rc (the rotor) that turns rigidly
+// at angular speed om. Both meshes share the nIface nodes of the interface circle, and
+// each step rotates the rotor by exactly one interface spacing, so the glued mesh is
+// always conforming. In the rotor the momentum equation is written in ALE form with
+// mesh velocity w = om x r, in the stator w = 0.
+//
+// Before including this file, define:
+//   mesh rotor0, stator;          rotor with region 1, stator with region 0
+//   int nIface; real Rc, om, nu;  interface segments, rotor radius, speed, viscosity
+//   macro BCS                     Dirichlet conditions on [u1, u2]; on a rotating wall
+//                                 write u = om x r out, region is not defined there
+//   real pinned                   small mass term on p when no boundary fixes the
+//                                 pressure level (all-Dirichlet velocity), 0 otherwise
+
+real dtheta = 2*pi/nIface;
+real dt = dtheta/abs(om);
+real ca = cos(dtheta), sa = sin(dtheta) * (om > 0 ? 1 : -1);
+real theta = 0;
+int step = 0;
+
+mesh rotor = rotor0;
+mesh Th = stator + rotor;
+
+fespace Xh(Th, [P2, P2, P1]);
+Xh [u1, u2, p], [v1, v2, q], [u1n, u2n, pn], [u1m, u2m, pm], [t1, t2, tp];
+
+macro inRotor() ((x^2 + y^2) < Rc^2*(1 - 1e-9)) //
+macro w1() ((region == 1) * (-om*y)) //
+macro w2() ((region == 1) * ( om*x)) //
+macro a1() (2*u1n - u1m - w1) //
+macro a2() (2*u2n - u2m - w2) //
+
+// Where each node of the new mesh was one step earlier.
+macro Xold() (inRotor ? ( ca*x + sa*y) : x) //
+macro Yold() (inRotor ? (-sa*x + ca*y) : y) //
+
+real bdf0 = 1.5, bdf1 = 2.0, bdf2 = -0.5;
+
+varf ns([u1, u2, p], [v1, v2, q]) =
+    int2d(Th)(bdf0/dt*(u1*v1 + u2*v2)
+        + conv(a1, a2, u1)*v1 + conv(a1, a2, u2)*v2
+        + nu*(dx(u1)*dx(v1) + dy(u1)*dy(v1) + dx(u2)*dx(v2) + dy(u2)*dy(v2))
+        - p*div(v1, v2) - q*div(u1, u2) - pinned*p*q)
+    + int2d(Th)((bdf1*u1n + bdf2*u1m)/dt*v1 + (bdf1*u2n + bdf2*u2m)/dt*v2)
+    + BCS;
+
+// One time step: turn the rotor by one interface spacing, glue it back onto the
+// stator, carry the two previous solutions to the new mesh and solve. A finite element
+// function only follows a new mesh when it is assigned an expression (u[] = ... keeps
+// the old one), hence the reset before the solve. A macro rather than a func, because
+// a func that replaces the mesh crashes FreeFEM. The macro ends at the first //, so no
+// comments inside (EndMacro is not known to older versions, as in FreeFem++-cs).
+macro ADVANCE()
+{
+    theta += dtheta * (om > 0 ? 1 : -1);
+    real c = cos(theta), s = sin(theta);
+    rotor = movemesh(rotor0, [c*x - s*y, s*x + c*y]);
+    Th = stator + rotor;
+
+    [t1, t2, tp] = [u1n(Xold, Yold), u2n(Xold, Yold), pn(Xold, Yold)];
+    [u1n, u2n, pn] = [t1, t2, tp];
+    [t1, t2, tp] = [u1m(Xold, Yold), u2m(Xold, Yold), pm(Xold, Yold)];
+    [u1m, u2m, pm] = [t1, t2, tp];
+    [u1, u2, p] = [0, 0, 0];
+
+    if (step == 0) { bdf0 = 1; bdf1 = 1; bdf2 = 0; }
+    else { bdf0 = 1.5; bdf1 = 2; bdf2 = -0.5; }
+
+    matrix A = ns(Xh, Xh, tgv = -1);
+    real[int] b = ns(0, Xh, tgv = -1);
+    set(A, solver = UMFPACK);
+    u1[] = A^-1*b;
+
+    u1m[] = u1n[];
+    u1n[] = u1[];
+    step += 1;
+} //
+
+macro torque(lab) (-int1d(Th, lab)(x*tractionY(u1, u2, p) - y*tractionX(u1, u2, p))) //
+macro forceX(lab) (-int1d(Th, lab)(tractionX(u1, u2, p))) //
+macro forceY(lab) (-int1d(Th, lab)(tractionY(u1, u2, p))) //

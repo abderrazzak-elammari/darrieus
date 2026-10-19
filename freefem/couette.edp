@@ -1,0 +1,50 @@
+// Verification of the sliding mesh: Taylor-Couette flow between an inner cylinder
+// spinning at om and a fixed outer cylinder. The interface sits halfway between them,
+// so the flow has to cross it to reach the outer wall.
+//
+//   FreeFem++ -nw couette.edp
+//   python scripts/run.py couette --N 48 96 192
+
+include "common.idp"
+
+// Parameters; scripts/run.py overrides them through override.idp.
+int nIface = 96;                 // nodes on the sliding interface, also steps per turn
+real nu = 0.1;
+real tEnd = 15.0;
+string out = "couette.csv";
+real R1 = 0.5, R2 = 1.0, Rc = 0.75;
+real om = 1;
+include "override.idp"
+
+border inner(t=0, 2*pi){x=R1*cos(t); y=R1*sin(t); label=1;}
+border iface(t=0, 2*pi){x=Rc*cos(t); y=Rc*sin(t); label=9;}
+border outer(t=0, 2*pi){x=R2*cos(t); y=R2*sin(t); label=2;}
+
+mesh rotor0 = buildmesh(iface(nIface) + inner(-round(nIface*R1/Rc)));
+mesh stator = buildmesh(outer(round(nIface*R2/Rc)) + iface(-nIface));
+rotor0 = change(rotor0, fregion = 1);
+stator = change(stator, fregion = 0);
+
+macro BCS on(1, u1 = -om*y, u2 = om*x) + on(2, u1 = 0, u2 = 0) //
+real pinned = 1e-10;
+
+include "sliding.idp"
+
+real A = -om*R1^2/(R2^2 - R1^2), B = om*R1^2*R2^2/(R2^2 - R1^2);
+func real uthetaExact(real r) { return A*r + B/r; }
+real torqueExact = -4*pi*nu*B;
+
+ofstream f(out);
+f << "t,torque,torque_exact,l2_error,h1_error" << endl;
+int nSteps = round(tEnd/dt);
+for (int k = 0; k < nSteps; ++k)
+{
+    ADVANCE
+    if (k % 10 == 9 || k == nSteps - 1)
+    {
+        real e2 = int2d(Th)((u1 + y*(A + B/(x^2 + y^2)))^2 + (u2 - x*(A + B/(x^2 + y^2)))^2);
+        real n2 = int2d(Th)((A*sqrt(x^2 + y^2) + B/sqrt(x^2 + y^2))^2);
+        f << step*dt << "," << torque(1) << "," << torqueExact << "," << sqrt(e2/n2) << ",0" << endl;
+    }
+}
+cout << "N " << nIface << " cells " << Th.nt << " torque " << torque(1) << " exact " << torqueExact << endl;

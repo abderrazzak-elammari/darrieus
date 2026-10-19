@@ -1,0 +1,4 @@
+// Parameter overrides, written by scripts/run.py before each run. Leave it empty in the
+// repository: every script sets its own defaults before including this file, so it can
+// be run as is from FreeFem++-cs or the command line, and the values can be edited at
+// the top of each script.
